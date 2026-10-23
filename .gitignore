@@ -1,0 +1,19 @@
+# Segredos
+config/api_keys.json
+.env
+.env.*
+*.pem
+*.key
+
+# Executaveis e instalador (distribuir via GitHub Releases)
+*.exe
+*.dat
+*.msi
+
+# Runtime local
+logs/
+models/
+runtime/
+__pycache__/
+*.pyc
+whatsapp_bridge/node_modules/
