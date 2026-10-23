@@ -4227,6 +4227,7 @@ class MainWindow(QMainWindow):
     _cowork_sig       = pyqtSignal(object)     # estado do Cowork (vem da thread dele)
     _cowork_pasta_sig = pyqtSignal()           # abrir a escolha da pasta do projeto
     _trans_voz_sig    = pyqtSignal(str, str, str)  # (fase, antigo, novo) — uma voz chama a outra
+    _audio_txt_sig    = pyqtSignal(str, str)       # (texto, erro) — mensagem de audio do chat
 
     def __init__(self, face_path: str):
         # ANTES DE MONTAR QUALQUER PAINEL. O cartao "so com o nome" e criado
@@ -6059,6 +6060,18 @@ class MainWindow(QMainWindow):
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #00a8cc, stop:1 #006f99);
             }
         """)
+        # MENSAGEM DE AUDIO (23/10/2026). Clica, fala, clica de novo: vira
+        # texto e entra no chat. Ver `core/audio_mensagem.py`.
+        self._mic_chat_btn = QPushButton("\ue720" if _fluent else "🎙")
+        self._mic_chat_btn.setFixedSize(34, 34)
+        self._mic_chat_btn.setFont(QFont(_fam_icone, 11) if _fluent else _fx(12))
+        self._mic_chat_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._mic_chat_btn.setToolTip("Mandar audio: clique, fale e clique de novo")
+        self._estilo_mic_chat(False)
+        self._mic_chat_btn.clicked.connect(self._alternar_audio_chat)
+        self._audio_txt_sig.connect(self._audio_transcrito)
+        row.addWidget(self._mic_chat_btn)
+
         send.clicked.connect(self._send)
         row.addWidget(send)
         return row
@@ -6443,6 +6456,76 @@ class MainWindow(QMainWindow):
                 self._mute_btn.set_card_theme(C.GREEN, "#00140a")
             else:
                 self._mute_btn.setStyleSheet(self._control_card_style(C.GREEN, "#00140a"))
+
+    def _estilo_mic_chat(self, gravando: bool) -> None:
+        if gravando:
+            fundo, cor, borda = "#3a0010", "#ff4d6d", "#ff4d6d"
+        else:
+            fundo, cor, borda = "#000d14", C.PRI, C.BORDER_A
+        self._mic_chat_btn.setStyleSheet(f"""
+            QPushButton {{
+                color: {cor}; background: {fundo};
+                border: 1px solid {borda}; border-radius: 17px;
+            }}
+            QPushButton:hover {{ border: 1px solid {cor}; }}
+            QPushButton:disabled {{ color: {C.TEXT_DIM}; }}
+        """)
+
+    def _alternar_audio_chat(self) -> None:
+        from core.audio_mensagem import GravadorDeAudio, transcrever  # noqa: PLC0415
+        grav = getattr(self, "_gravador_chat", None)
+        if grav is None:
+            grav = self._gravador_chat = GravadorDeAudio()
+
+        if not grav.gravando:
+            # A escuta continua fica muda enquanto ele grava: sem isso o JARVIS
+            # ouviria a mesma frase pelos dois caminhos e responderia duas vezes.
+            self._mudo_antes_do_audio = self._muted
+            if not self._muted:
+                self._toggle_mute()
+            casca = getattr(self, "_ui", None)
+            mic = ((getattr(casca, "persona_atual", None) or {}) if casca else {}).get("microfone")
+            try:
+                grav.comecar(mic)
+            except Exception as exc:
+                if not self._mudo_antes_do_audio and self._muted:
+                    self._toggle_mute()
+                self._log.append_log(f"ERR: microfone do chat: {str(exc)[:90]}")
+                return
+            self._estilo_mic_chat(True)
+            self._mic_chat_btn.setToolTip("Gravando… clique para enviar")
+            self._input.setPlaceholderText("● Gravando… clique no microfone para enviar")
+            return
+
+        pcm = grav.parar()
+        if not getattr(self, "_mudo_antes_do_audio", False) and self._muted:
+            self._toggle_mute()
+        self._estilo_mic_chat(False)
+        self._mic_chat_btn.setEnabled(False)
+        self._mic_chat_btn.setToolTip("Transcrevendo…")
+        self._input.setPlaceholderText("Transcrevendo o audio…")
+
+        def _trabalho():
+            try:
+                self._audio_txt_sig.emit(transcrever(pcm), "")
+            except Exception as exc:
+                self._audio_txt_sig.emit("", str(exc))
+
+        threading.Thread(target=_trabalho, daemon=True).start()
+
+    def _audio_transcrito(self, texto: str, erro: str) -> None:
+        self._mic_chat_btn.setEnabled(True)
+        self._mic_chat_btn.setToolTip("Mandar audio: clique, fale e clique de novo")
+        self._input.setPlaceholderText("Digite um comando ou pergunta…")
+        if erro:
+            self._log.append_log(f"ERR: nao consegui transcrever o audio: {erro[:120]}")
+            return
+        texto = (texto or "").strip()
+        if not texto:
+            self._log.append_log("SIS: nao ouvi nada no audio.")
+            return
+        self._input.setText(texto)
+        self._send()
 
     def _send(self):
         txt = self._input.text().strip()
